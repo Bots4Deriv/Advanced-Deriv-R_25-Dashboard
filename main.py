@@ -6,11 +6,15 @@ import time
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
 
 app = FastAPI()
 
-DERIV_APP_ID = "1089"
-SYMBOL = "R_25"
+templates = Jinja2Templates(directory="templates")
+
+DERIV_APP_ID="1089"
+SYMBOL="R_25"
 
 ticks=[]
 times=[]
@@ -25,8 +29,6 @@ volatility=0
 ma9=0
 ma21=0
 confidence=0
-tick_speed=0
-sweep="NONE"
 
 # -----------------------
 # INDICATORS
@@ -34,7 +36,7 @@ sweep="NONE"
 
 def MA(period):
     if len(ticks)<period:
-        return None
+        return 0
     return sum(ticks[-period:])/period
 
 
@@ -74,6 +76,7 @@ def RSI(period=14):
 
     return 100-(100/(1+rs))
 
+
 # -----------------------
 # MARKET STRUCTURE
 # -----------------------
@@ -101,6 +104,7 @@ def market_structure():
 
     else:
         market="RANGE"
+
 
 # -----------------------
 # SIGNAL ENGINE
@@ -146,10 +150,13 @@ def analyze():
 
     if score>=50:
         signal="BUY"
+
     elif score<=-50:
         signal="SELL"
+
     else:
         signal="NEUTRAL"
+
 
 # -----------------------
 # DERIV STREAM
@@ -187,65 +194,33 @@ async def stream():
 
                 analyze()
 
+
 # -----------------------
-# WEB DASHBOARD
+# WEB PAGE
 # -----------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def home():
+async def home(request: Request):
 
-    return f"""
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request":request,
+            "price":price,
+            "signal":signal,
+            "confidence":confidence,
+            "market":market,
+            "rsi":round(rsi,1),
+            "vol":round(volatility,3)
+        }
+    )
 
-    body {{
-        background:black;
-        color:white;
-        text-align:center;
-        font-family:Arial;
-    }}
-
-    .circle {{
-        width:300px;
-        height:300px;
-        border-radius:50%;
-        background:{'green' if signal=='BUY' else 'red' if signal=='SELL' else 'gray'};
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        flex-direction:column;
-        margin:auto;
-        margin-top:80px;
-        font-size:28px;
-    }}
-
-    </style>
-    </head>
-
-    <body>
-
-    <div class="circle">
-    {price:.3f}<br>{signal}<br>{confidence}%
-    </div>
-
-    <h3>Market: {market}</h3>
-    <p>RSI: {round(rsi,1)} | Volatility: {round(volatility,3)}</p>
-
-    <script>
-    setTimeout(()=>location.reload(),1000)
-    </script>
-
-    </body>
-    </html>
-    """
 
 # -----------------------
 # START STREAM
 # -----------------------
 
 @app.on_event("startup")
-async def start():
+async def startup():
 
     asyncio.create_task(stream())
