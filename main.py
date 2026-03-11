@@ -1,155 +1,251 @@
 import asyncio
 import json
-import websockets
 import statistics
-import threading
+import websockets
 import time
-import os
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
+app = FastAPI()
 
 DERIV_APP_ID = "1089"
 SYMBOL = "R_25"
 
-ticks = []
-digits = []
-times = []
+ticks=[]
+times=[]
 
-MAX_TICKS = 200
+price=0
+signal="NEUTRAL"
+market="UNKNOWN"
 
-price = 0
-signal = "WAIT"
-probability = 0
-momentum = 0
-volatility = 0
-tick_speed = 0
-liquidity_sweep = "NO"
+rsi=50
+momentum=0
+volatility=0
+ma9=0
+ma21=0
+confidence=0
+tick_speed=0
+sweep="NONE"
 
 # -----------------------
 # INDICATORS
 # -----------------------
 
-def bollinger(data, period=20):
-    if len(data) < period:
-        return None, None, None
-    sma = statistics.mean(data[-period:])
-    std = statistics.stdev(data[-period:])
-    upper = sma + 2*std
-    lower = sma - 2*std
-    return upper, sma, lower
+def MA(period):
+    if len(ticks)<period:
+        return None
+    return sum(ticks[-period:])/period
 
-def calc_momentum():
-    if len(ticks) < 10:
+
+def MOMENTUM():
+    if len(ticks)<10:
         return 0
-    return ticks[-1] - ticks[-10]
+    return ticks[-1]-ticks[-10]
 
-def calc_volatility():
-    if len(ticks) < 20:
+
+def VOL():
+    if len(ticks)<20:
         return 0
     return statistics.stdev(ticks[-20:])
 
-def calc_tick_speed():
-    if len(times) < 10:
-        return 0
-    diff = times[-1] - times[-10]
-    if diff == 0:
-        return 0
-    return round(10 / diff,2)
 
-def detect_sweep():
-    global liquidity_sweep
-    if len(ticks) < 15:
+def RSI(period=14):
+
+    if len(ticks)<period+1:
+        return 50
+
+    gains=[]
+    losses=[]
+
+    for i in range(-period,-1):
+
+        diff=ticks[i+1]-ticks[i]
+
+        if diff>0:
+            gains.append(diff)
+        else:
+            losses.append(abs(diff))
+
+    avg_gain=sum(gains)/period if gains else 0.0001
+    avg_loss=sum(losses)/period if losses else 0.0001
+
+    rs=avg_gain/avg_loss
+
+    return 100-(100/(1+rs))
+
+# -----------------------
+# MARKET STRUCTURE
+# -----------------------
+
+def market_structure():
+
+    global market
+
+    if len(ticks)<30:
         return
-    high = max(ticks[-15:])
-    low = min(ticks[-15:])
-    p = ticks[-1]
-    if p > high:
-        liquidity_sweep = "HIGH SWEEP"
-    elif p < low:
-        liquidity_sweep = "LOW SWEEP"
+
+    range_size=max(ticks[-20:]) - min(ticks[-20:])
+
+    if range_size < 0.2:
+        market="CONSOLIDATION"
+
+    elif abs(momentum)>0.5:
+        market="BREAKOUT"
+
+    elif ma9>ma21:
+        market="UPTREND"
+
+    elif ma9<ma21:
+        market="DOWNTREND"
+
     else:
-        liquidity_sweep = "NO"
+        market="RANGE"
 
 # -----------------------
 # SIGNAL ENGINE
 # -----------------------
 
 def analyze():
-    global momentum, volatility, probability, signal, tick_speed
 
-    upper, mid, lower = bollinger(ticks)
-    if upper is None:
+    global signal,rsi,momentum,volatility,ma9,ma21,confidence
+
+    if len(ticks)<30:
         return
 
-    momentum = round(calc_momentum(),4)
-    volatility = round(calc_volatility(),4)
-    tick_speed = calc_tick_speed()
-    detect_sweep()
+    ma9=MA(9)
+    ma21=MA(21)
 
-    prob = 0
-    if abs(momentum) > 0.2:
-        prob += 30
-    if volatility > 0.25:
-        prob += 30
-    if tick_speed > 3:
-        prob += 20
-    if liquidity_sweep != "NO":
-        prob += 20
+    momentum=MOMENTUM()
+    volatility=VOL()
+    rsi=RSI()
 
-    probability = prob
+    market_structure()
 
-    s = "WAIT"
-    p = ticks[-1]
+    score=0
 
-    if prob > 60:
-        if p > upper:
-            s = "BUY"
-        elif p < lower:
-            s = "SELL"
+    if ma9>ma21:
+        score+=25
+    else:
+        score-=25
 
-    signal = s
+    if rsi>55:
+        score+=25
+    elif rsi<45:
+        score-=25
 
-    # -----------------------
-    # PRINT SIGNALS IN LOGS
-    # -----------------------
-    print(f"[{time.strftime('%H:%M:%S')}] Price: {p:.3f} | Signal: {signal} | Prob: {prob} | Momentum: {momentum} | Volatility: {volatility} | Tick Speed: {tick_speed} | Sweep: {liquidity_sweep}")
+    if momentum>0:
+        score+=25
+    else:
+        score-=25
+
+    if abs(volatility)>=0.4:
+        score+=25
+
+    confidence=abs(score)
+
+    if score>=50:
+        signal="BUY"
+    elif score<=-50:
+        signal="SELL"
+    else:
+        signal="NEUTRAL"
 
 # -----------------------
-# STREAM TICKS
+# DERIV STREAM
 # -----------------------
 
 async def stream():
+
     global price
-    url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+
+    url=f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+
     async with websockets.connect(url) as ws:
-        sub = {"ticks": SYMBOL, "subscribe": 1}
-        await ws.send(json.dumps(sub))
+
+        await ws.send(json.dumps({
+            "ticks":SYMBOL,
+            "subscribe":1
+        }))
+
         while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
+
+            msg=await ws.recv()
+            data=json.loads(msg)
+
             if "tick" in data:
-                p = float(data["tick"]["quote"])
-                price = p
+
+                p=float(data["tick"]["quote"])
+                price=p
+
                 ticks.append(p)
                 times.append(time.time())
-                if len(ticks) > MAX_TICKS:
+
+                if len(ticks)>200:
                     ticks.pop(0)
                     times.pop(0)
-                digit = int(str(p)[-1])
-                digits.append(digit)
-                if len(digits) > 200:
-                    digits.pop(0)
+
                 analyze()
 
-def start_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(stream())
-
 # -----------------------
-# START
+# WEB DASHBOARD
 # -----------------------
 
-if __name__ == "__main__":
-    print("🚀 Deriv R_25 Signal Bot Starting...")
-    t = threading.Thread(target=start_loop)
-    t.start()
-    t.join()
+@app.get("/", response_class=HTMLResponse)
+async def home():
+
+    return f"""
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+
+    body {{
+        background:black;
+        color:white;
+        text-align:center;
+        font-family:Arial;
+    }}
+
+    .circle {{
+        width:300px;
+        height:300px;
+        border-radius:50%;
+        background:{'green' if signal=='BUY' else 'red' if signal=='SELL' else 'gray'};
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        flex-direction:column;
+        margin:auto;
+        margin-top:80px;
+        font-size:28px;
+    }}
+
+    </style>
+    </head>
+
+    <body>
+
+    <div class="circle">
+    {price:.3f}<br>{signal}<br>{confidence}%
+    </div>
+
+    <h3>Market: {market}</h3>
+    <p>RSI: {round(rsi,1)} | Volatility: {round(volatility,3)}</p>
+
+    <script>
+    setTimeout(()=>location.reload(),1000)
+    </script>
+
+    </body>
+    </html>
+    """
+
+# -----------------------
+# START STREAM
+# -----------------------
+
+@app.on_event("startup")
+async def start():
+
+    asyncio.create_task(stream())
