@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+
+body{
+background:black;
+color:white;
+text-align:center;
+font-family:Arial;
+}
+
+.circle{
+
+width:280px;
+height:280px;
+
+border-radius:50%;
+
+display:flex;
+align-items:center;
+justify-content:center;
+
+flex-direction:column;
+
+margin:auto;
+margin-top:80px;
+
+font-size:28px;
+}
+
+.buy{background:green;}
+.sell{background:red;}
+.neutral{background:gray;}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="circle {{ signal|lower }}">
+
+<div>{{price}}</div>
+<div>{{signal}}</div>
+<div>{{confidence}}%</div>
+
+</div>
+
+<h3>Market: {{market}}</h3>
+
+<p>
+RSI: {{rsi}} |
+Volatility: {{vol}}
+</p>
+
+<script>
+
+setTimeout(()=>{
+location.reload()
+},1000)
+
+</script>
+
+</body>
+
+</html>
