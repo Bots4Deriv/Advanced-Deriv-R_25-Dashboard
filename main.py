@@ -56,7 +56,7 @@ def calc_tick_speed():
 
 def detect_sweep():
     global liquidity_sweep
-    if len(ticks) < 30:
+    if len(ticks) < 15:
         return
     high = max(ticks[-15:])
     low = min(ticks[-15:])
