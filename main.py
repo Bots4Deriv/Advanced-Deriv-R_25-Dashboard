@@ -232,6 +232,8 @@ def start_loop():
 
 HTML = """
 
+<meta http-equiv="refresh" content="2">
+
 <h1>Deriv Advanced Synthetic Dashboard</h1>
 
 <h2>Symbol: R_25</h2>
