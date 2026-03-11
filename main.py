@@ -58,8 +58,8 @@ def detect_sweep():
     global liquidity_sweep
     if len(ticks) < 30:
         return
-    high = max(ticks[-30:])
-    low = min(ticks[-30:])
+    high = max(ticks[-15:])
+    low = min(ticks[-15:])
     p = ticks[-1]
     if p > high:
         liquidity_sweep = "HIGH SWEEP"
