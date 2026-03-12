@@ -42,6 +42,29 @@ stake_amount = 0.35
 
 
 # -----------------------
+# BASIC PAGES
+# -----------------------
+
+@app.get("/")
+async def home():
+    return HTMLResponse("""
+    <h2>🚀 Deriv R_25 Trading Bot</h2>
+    <p>Bot is running.</p>
+    <p>Endpoints:</p>
+    <ul>
+    <li>/status</li>
+    <li>/start</li>
+    <li>/stop</li>
+    </ul>
+    """)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "running"}
+
+
+# -----------------------
 # INDICATORS
 # -----------------------
 
@@ -104,27 +127,36 @@ def analyze_signal():
 async def tick_stream():
     global price
 
-    url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+    while True:
 
-    async with websockets.connect(url) as ws:
+        try:
 
-        await ws.send(json.dumps({
-            "ticks": SYMBOL,
-            "subscribe": 1
-        }))
+            url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
+            async with websockets.connect(url) as ws:
 
-            if "tick" in data:
-                price = float(data["tick"]["quote"])
-                ticks.append(price)
+                await ws.send(json.dumps({
+                    "ticks": SYMBOL,
+                    "subscribe": 1
+                }))
 
-                if len(ticks) > 200:
-                    ticks.pop(0)
+                while True:
 
-                analyze_signal()
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+
+                    if "tick" in data:
+                        price = float(data["tick"]["quote"])
+                        ticks.append(price)
+
+                        if len(ticks) > 200:
+                            ticks.pop(0)
+
+                        analyze_signal()
+
+        except Exception as e:
+            print("Tick stream error:", e)
+            await asyncio.sleep(3)
 
 
 # -----------------------
@@ -135,76 +167,82 @@ async def execute_trade(direction, stake, token):
 
     global trade_in_progress
 
-    url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+    try:
 
-    async with websockets.connect(url) as ws:
+        url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
 
-        await ws.send(json.dumps({
-            "authorize": token
-        }))
-
-        await ws.recv()
-
-        # INVERTED LOGIC
-        contract_type = "PUT" if direction == "BUY" else "CALL"
-
-        proposal = {
-            "proposal": 1,
-            "amount": round(stake, 2),
-            "basis": "stake",
-            "contract_type": contract_type,
-            "currency": "USD",
-            "duration": 15,
-            "duration_unit": "s",
-            "symbol": SYMBOL
-        }
-
-        await ws.send(json.dumps(proposal))
-
-        proposal_response = json.loads(await ws.recv())
-
-        if "error" in proposal_response:
-            trade_in_progress = False
-            return None, 0
-
-        proposal_id = proposal_response["proposal"]["id"]
-
-        await ws.send(json.dumps({
-            "buy": proposal_id,
-            "price": round(stake, 2)
-        }))
-
-        buy = json.loads(await ws.recv())
-
-        if "error" in buy:
-            trade_in_progress = False
-            return None, 0
-
-        contract_id = buy["buy"]["contract_id"]
-
-        while True:
+        async with websockets.connect(url) as ws:
 
             await ws.send(json.dumps({
-                "proposal_open_contract": 1,
-                "contract_id": contract_id
+                "authorize": token
             }))
 
-            result = json.loads(await ws.recv())
+            await ws.recv()
 
-            contract = result["proposal_open_contract"]
+            contract_type = "PUT" if direction == "BUY" else "CALL"
 
-            if contract["is_sold"]:
+            proposal = {
+                "proposal": 1,
+                "amount": round(stake, 2),
+                "basis": "stake",
+                "contract_type": contract_type,
+                "currency": "USD",
+                "duration": 15,
+                "duration_unit": "s",
+                "symbol": SYMBOL
+            }
 
-                profit = float(contract["profit"])
+            await ws.send(json.dumps(proposal))
 
+            proposal_response = json.loads(await ws.recv())
+
+            if "error" in proposal_response:
                 trade_in_progress = False
+                return None, 0
 
-                if profit > 0:
-                    return "WIN", profit
-                else:
-                    return "LOSS", profit
+            proposal_id = proposal_response["proposal"]["id"]
 
-            await asyncio.sleep(1)
+            await ws.send(json.dumps({
+                "buy": proposal_id,
+                "price": round(stake, 2)
+            }))
+
+            buy = json.loads(await ws.recv())
+
+            if "error" in buy:
+                trade_in_progress = False
+                return None, 0
+
+            contract_id = buy["buy"]["contract_id"]
+
+            while True:
+
+                await ws.send(json.dumps({
+                    "proposal_open_contract": 1,
+                    "contract_id": contract_id
+                }))
+
+                result = json.loads(await ws.recv())
+
+                contract = result["proposal_open_contract"]
+
+                if contract["is_sold"]:
+
+                    profit = float(contract["profit"])
+
+                    trade_in_progress = False
+
+                    if profit > 0:
+                        return "WIN", profit
+                    else:
+                        return "LOSS", profit
+
+                await asyncio.sleep(1)
+
+    except Exception as e:
+        print("Trade error:", e)
+        trade_in_progress = False
+        return None, 0
 
 
 # -----------------------
@@ -220,20 +258,18 @@ async def auto_trader():
 
     while auto_trader_running:
 
-        # STOP CONDITIONS
-
         if take_profit > 0 and cumulative_profit >= take_profit:
-            print("Take Profit reached. Bot stopping.")
+            print("TP reached")
             auto_trader_running = False
             break
 
         if stop_loss > 0 and cumulative_profit <= -abs(stop_loss):
-            print("Stop Loss reached. Bot stopping.")
+            print("SL reached")
             auto_trader_running = False
             break
 
         if max_trades > 0 and trade_count >= max_trades:
-            print("Max trades reached. Bot stopping.")
+            print("Max trades reached")
             auto_trader_running = False
             break
 
@@ -246,11 +282,8 @@ async def auto_trader():
             continue
 
         trade_in_progress = True
-        direction = signal
 
-        print(f"Placing {direction} trade")
-
-        result, profit = await execute_trade(direction, stake_amount, api_token)
+        result, profit = await execute_trade(signal, stake_amount, api_token)
 
         if result is None:
             await asyncio.sleep(2)
@@ -261,18 +294,11 @@ async def auto_trader():
 
         trade_history.append({
             "timestamp": time.strftime("%H:%M:%S"),
-            "direction": direction,
-            "stake": stake_amount,
-            "entry_price": round(price, 3),
-            "result": result,
-            "profit": round(profit, 2),
-            "trade_number": trade_count
+            "direction": signal,
+            "profit": profit
         })
 
-        if len(trade_history) > 50:
-            trade_history.pop(0)
-
-        print(f"Trade #{trade_count} | {result} | Profit {profit}")
+        print(f"Trade {trade_count} result:", result, profit)
 
         await asyncio.sleep(5)
 
@@ -283,14 +309,13 @@ async def auto_trader():
 
 @app.get("/status")
 async def status():
+
     return {
         "price": price,
         "signal": signal,
-        "trade_history": trade_history,
-        "cumulative_profit": round(cumulative_profit, 2),
-        "trade_count": trade_count,
-        "max_trades": max_trades,
-        "auto_trader_running": auto_trader_running
+        "profit": cumulative_profit,
+        "trades": trade_count,
+        "running": auto_trader_running
     }
 
 
@@ -349,11 +374,7 @@ async def stop():
 
     auto_trader_running = False
 
-    return {
-        "status": "stopped",
-        "final_profit": cumulative_profit,
-        "total_trades": trade_count
-    }
+    return {"status": "stopped"}
 
 
 # -----------------------
